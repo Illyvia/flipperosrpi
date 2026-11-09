@@ -12,10 +12,16 @@ on:
         type: choice
         options: [orange, grayscale]
         default: orange
+      components_run:
+        description: Optional previous run ID to reuse compiled components
+        type: string
+        default: ""
 permissions:
   contents: read
+  actions: read
 jobs:
   components:
+    if: ${{ inputs.components_run == '' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
@@ -46,6 +52,7 @@ jobs:
           path: components.tar.gz
           retention-days: 7
   image:
+    if: ${{ always() && (needs.components.result == 'success' || needs.components.result == 'skipped') }}
     needs: components
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -54,6 +61,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: native-arm64-components
+          run-id: ${{ inputs.components_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Install image tools
         run: |
           sudo apt-get update -qq

@@ -25,6 +25,10 @@ with tempfile.TemporaryDirectory(prefix='flipper-public-') as tmp:
    machine=root/'etc/machine-id'
    if machine.is_symlink():machine.unlink()
    machine.write_text('')
+   # The runner's build-time DNS address is not usable on a flashed Pi.
+   resolv=root/'etc/resolv.conf'
+   resolv.unlink(missing_ok=True)
+   resolv.symlink_to('/run/NetworkManager/resolv.conf')
    dbus=root/'var/lib/dbus/machine-id'
    if dbus.is_file() and not dbus.is_symlink():dbus.write_text('')
    connections=root/'etc/NetworkManager/system-connections'
@@ -44,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='flipper-public-') as tmp:
   for root in roots:
    if list((root/'etc/ssh').glob('ssh_host_*')):raise SystemExit('Host identity remains')
   os.sync()
-  image.with_name('public-image-check.json').write_text(json.dumps({'profile_roots_checked':len(roots),'private_wifi_present':False,'host_keys_removed':True,'machine_ids_reset':True,'removed_identity_files':removed},indent=2)+'\n')
+  image.with_name('public-image-check.json').write_text(json.dumps({'profile_roots_checked':len(roots),'private_wifi_present':False,'host_keys_removed':True,'machine_ids_reset':True,'dns_managed_by_networkmanager':True,'removed_identity_files':removed},indent=2)+'\n')
   print('PUBLIC IMAGE IDENTITY CHECK PASSED')
  finally:
   for root in readonly:subprocess.run(['btrfs','property','set',str(root),'ro','true'],check=True)

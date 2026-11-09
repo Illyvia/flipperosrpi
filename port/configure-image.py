@@ -4,6 +4,7 @@ import os,sys,pathlib,subprocess,shutil,json,gzip,time,re
 if os.environ.get("FLIPPER_PRIVATE_MOUNT_NS")!="1":
  os.execvp("unshare",["unshare","--mount","--propagation","private","env","FLIPPER_PRIVATE_MOUNT_NS=1",sys.executable,*sys.argv])
 B=pathlib.Path(os.environ.get('FLIPPER_BUILD_ROOT', '/var/tmp/flipperos-rpi-full')).resolve();M=B/'mnt';F=B/'firmware';PORT=B/'port';IMAGE=B/'flipperos-rpi4.img';BUILD='1328001'
+DONOR=pathlib.Path(os.environ.get('FLIPPER_BOARD_INPUT', '/'))
 NAMES=['Minimal','Desktop','TV-Media-Box','Router','No-Graphics']
 if os.geteuid()!=0 or os.uname().machine!='aarch64':raise SystemExit('Native ARM64 root is required; no QEMU')
 if not all((B/(n+'.verified')).exists() for n in NAMES):raise SystemExit('Receive and verify all official stocks first')
@@ -30,9 +31,9 @@ try:
  run('udevadm','settle');run('mount','-t','btrfs','-o','subvolid=5,compress=zstd:3,noatime',p2,str(M));run('mount',p1,str(F))
  rootuuid=output('blkid','-s','UUID','-o','value',p2);fatuuid=output('blkid','-s','UUID','-o','value',p1)
  # Seed only board firmware, never the builder's cloud-init files or boot configuration.
- for src in pathlib.Path('/boot/firmware').iterdir():
+ for src in (DONOR/'boot/firmware').iterdir():
   if src.is_file() and (src.suffix in ['.dat','.elf','.dtb'] or src.name in ['bootcode.bin','LICENCE.broadcom']):shutil.copyfile(src,F/src.name)
- if not (F/'overlays').exists():shutil.copytree('/boot/firmware/overlays',F/'overlays')
+ if not (F/'overlays').exists():shutil.copytree(DONOR/'boot/firmware/overlays',F/'overlays')
  put(F/'config.txt','arm_64bit=1\\nenable_uart=1\\nkernel=u-boot.bin\\n'.replace('\\n','\n'))
  put(F/'cmdline.txt',f'console=tty1 root=UUID={rootuuid} rootfstype=btrfs rootflags=subvol=@Desktop rootwait rw net.ifnames=0\\n'.replace('\\n','\n'))
  # Receive upstream's shared home stream, including the KDE/Kodi user configuration.
@@ -69,14 +70,14 @@ try:
    put(root/'etc/kernel/cmdline',f'console=tty1 console=serial0,115200 root=UUID={rootuuid} rootfstype=btrfs rootwait rw net.ifnames=0\n')
    put(root/'etc/flipper-rpi-image.conf',f'ROOT_UUID={rootuuid}\nFIRMWARE_UUID={fatuuid}\n')
    put(root/'etc/resolv.conf',pathlib.Path('/etc/resolv.conf').read_text())
-   put(root/'etc/apt/sources.list.d/raspi.sources',pathlib.Path('/etc/apt/sources.list.d/raspi.sources').read_text())
-   key=root/'usr/share/keyrings/raspberrypi-archive-keyring.pgp';key.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile('/usr/share/keyrings/raspberrypi-archive-keyring.pgp',key)
+   put(root/'etc/apt/sources.list.d/raspi.sources',(DONOR/'etc/apt/sources.list.d/raspi.sources').read_text())
+   key=root/'usr/share/keyrings/raspberrypi-archive-keyring.pgp';key.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(DONOR/'usr/share/keyrings/raspberrypi-archive-keyring.pgp',key)
    # Suppress upstream Rockchip entry generation while replacing its kernel packages.
    for path in (root/'etc/kernel/install.d').glob('*.install'):
     saved=path.with_name(path.name+'.rpi-disabled');path.rename(saved);path.symlink_to('/dev/null');disabled.append((path,saved))
    print('Installing Pi kernel/firmware into',name,flush=True)
    ch(root,'apt-get','update','-qq')
-   ch(root,'apt-get','install','-y','--no-install-recommends','linux-image-rpi-v8','raspi-firmware','firmware-brcm80211','libpam-systemd','busybox-static')
+   ch(root,'apt-get','install','-y','--no-install-recommends','linux-image-rpi-v8','raspi-firmware','firmware-brcm80211','libpam-systemd','busybox-static','python3','sway','dbus-user-session')
    packages=subprocess.check_output(['chroot',str(root),'dpkg-query','-W','-f=${binary:Package} ${Status}\n','linux-image-*'],text=True)
    remove=[x.split()[0] for x in packages.splitlines() if x.endswith('install ok installed') and 'rpt-rpi-v8' not in x.split()[0] and x.split()[0]!='linux-image-rpi-v8']
    if remove:ch(root,'apt-get','purge','-y',*remove)
@@ -101,7 +102,7 @@ try:
    # Public builds do not copy the builder's network credentials. Private Wi-Fi is opt-in.
    con=root/'etc/NetworkManager/system-connections';con.mkdir(parents=True,exist_ok=True)
    for file in con.glob('*'):
-    if file.is_file():file.write_text(file.read_text().replace('interface-name=end0','interface-name=eth0').replace('interface-name=end1','interface-name=eth1'));file.chmod(0o600)
+    if file.is_file():file.unlink()
    if name!='Router':
     wifi=os.environ.get('FLIPPER_PRIVATE_WIFI_FILE')
     if wifi:

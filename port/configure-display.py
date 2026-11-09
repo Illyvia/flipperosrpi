@@ -73,7 +73,9 @@ try:
                 connection=net/'flipper-wifi.nmconnection'
                 shutil.copyfile(a.wifi,connection);connection.chmod(0o600)
                 os.chown(connection,0,0)
-            ver='6.18.60+rpt-rpi-v8'
+            versions=[p.name for p in (root/'usr/lib/modules').iterdir() if 'rpt-rpi-v8' in p.name]
+            if len(versions)!=1: raise SystemExit('Expected exactly one Pi kernel per profile')
+            ver=versions[0]
             dt=root/'usr/lib'/('linux-image-'+ver)/'broadcom'
             base=dt/'bcm2711-rpi-4-b.dtb'
             if name != 'No-Graphics':

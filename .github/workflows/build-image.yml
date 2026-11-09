@@ -1,0 +1,92 @@
+name: Build flashable image
+on:
+  workflow_dispatch:
+    inputs:
+      display:
+        description: Display to use on first boot
+        type: choice
+        options: [hdmi, waveshare-7-e]
+        default: hdmi
+      tint:
+        description: Launcher color
+        type: choice
+        options: [orange, grayscale]
+        default: orange
+permissions:
+  contents: read
+jobs:
+  components:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-aarch64-linux-gnu build-essential pkg-config libssl-dev libudev-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libgbm-dev bison flex libgnutls28-dev python3-pyelftools swig device-tree-compiler
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup default 1.96.1
+          rustup target add aarch64-unknown-linux-gnu
+      - name: Fetch pinned source
+        run: python3 scripts/fetch-upstream.py
+      - name: Build full ARM64 launcher
+        env:
+          CARGO_BUILD_JOBS: '3'
+          CARGO_PROFILE_RELEASE_DEBUG: '0'
+        run: bash port/build-full-ui.sh
+      - name: Build bootloader and device-tree tools
+        run: |
+          bash port/build-uboot.sh
+          bash port/build-dtmerge.sh
+      - name: Bundle components
+        run: tar -czf components.tar.gz build/full-os build/dsi-tools
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-arm64-components
+          path: components.tar.gz
+          retention-days: 7
+  image:
+    needs: components
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-arm64-components
+      - name: Install image tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y btrfs-progs dosfstools parted zstd u-boot-tools device-tree-compiler rsync curl gnupg python3
+          tar -xzf components.tar.gz
+      - name: Check native image build support
+        run: |
+          test "$(uname -m)" = aarch64
+          df -h .
+          sudo modprobe btrfs
+          sudo losetup --find
+          test "$(df --output=avail -B1 . | tail -1)" -ge 12000000000
+      - name: Assemble and validate image
+        env:
+          DISPLAY_PRESET: ${{ inputs.display }}
+          DISPLAY_TINT: ${{ inputs.tint }}
+        run: sudo bash port/build-image-ci.sh "$DISPLAY_PRESET" "$DISPLAY_TINT"
+      - name: Upload flashable image
+        uses: actions/upload-artifact@v4
+        with:
+          name: flipperos-rpi4-${{ inputs.display }}-${{ inputs.tint }}
+          path: build/download/
+          compression-level: 0
+          retention-days: 14
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-build-diagnostics
+          path: |
+            build/image/*.json
+            build/image/*.kernel
+            build/image/*.mesa-packages
+            build/board-inputs/board-packages.json
+          if-no-files-found: ignore
+          retention-days: 7

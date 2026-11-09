@@ -37,7 +37,7 @@ try:
    shutil.copyfile(src,dst);dst.chmod(0o755 if src.read_bytes().startswith(b'#!') else 0o644)
   run(sys.executable,B/'port/install-display.py',stock,'--profile',name,'--no-kernel')
   # Preserve this Pi's existing radio country and use its real UART console name.
-  live_cmd=pathlib.Path('/proc/cmdline').read_text()
+  live_cmd=os.environ.get('FLIPPER_BOARD_CMDLINE', pathlib.Path('/proc/cmdline').read_text())
   country=re.search(r'(?:^|\s)cfg80211\.ieee80211_regdom=([A-Z0-9]{2})(?:\s|$)',live_cmd)
   cmdfile=stock/'etc/kernel/cmdline';cmd=cmdfile.read_text().strip()
   if country:
@@ -76,7 +76,7 @@ try:
   for board in ['4-b','400']:
    for overlay in ['vc4-kms-v3d','rpi4-no-graphics']:
     dest=B/('validate-'+board+'-'+overlay+'.dtb')
-    run('fdtoverlay','-i',str(dt/('bcm2711-rpi-'+board+'.dtb')),'-o',str(dest),str(dt/(overlay+'.dtbo')))
+    run(os.environ.get('FLIPPER_FDTOVERLAY','fdtoverlay'),'-i',str(dt/('bcm2711-rpi-'+board+'.dtb')),'-o',str(dest),str(dt/(overlay+'.dtbo')))
   packages=out('chroot',str(stock),'dpkg-query','-W','-f=${binary:Package} ${Status}\n','linux-image-*')
   installed=[x.split()[0] for x in packages.splitlines() if x.endswith('install ok installed')]
   if not installed or any('rpt-rpi-v8' not in x and x!='linux-image-rpi-v8' for x in installed):raise SystemExit('Non-Pi kernel remains installed: '+str(installed))

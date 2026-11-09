@@ -12,12 +12,14 @@ def main():
     base=pathlib.Path(sys.argv[1]).resolve()
     base.mkdir(parents=True,exist_ok=True)
     def run(*args,**kw):return subprocess.run([str(a) for a in args],check=True,**kw)
-    key=base/'raspberrypi.asc'
-    run('curl','-fsSL','--retry','3','https://archive.raspberrypi.com/debian/raspberrypi.gpg.key','-o',key)
+    key=base/'raspberrypi.gpg'
+    run('curl','-fsSL','--retry','3','https://raw.githubusercontent.com/raspberrypi/rpi-image-gen/1f5851b24a6ac25b91edfaed5f2b59e770d0ac9e/keydir/raspberrypi-archive-keyring.gpg','-o',key)
+    # Refreshed upstream certificate: the older .gpg.key URL has a SHA1 binding.
+    if hashlib.sha256(key.read_bytes()).hexdigest()!='3a29901549ae65a910de13a32551e6eea7f45ba1fd70f0cb67e5c70d98488071':raise SystemExit('Unexpected Raspberry Pi certificate bytes')
     info=subprocess.check_output(['gpg','--show-keys','--with-colons',str(key)],text=True)
     if 'fpr:::::::::CF8A1AF502A2AA2D763BAE7E82B129927FA3303E:' not in info:raise SystemExit('Unexpected Raspberry Pi signing key')
     keyring=base/'usr/share/keyrings/raspberrypi-archive-keyring.pgp';keyring.parent.mkdir(parents=True,exist_ok=True)
-    run('gpg','--batch','--yes','--dearmor','-o',keyring,key)
+    shutil.copyfile(key,keyring)
     sources=base/'etc/apt/sources.list.d/raspi.sources';sources.parent.mkdir(parents=True,exist_ok=True)
     sources.write_text('Types: deb\nURIs: https://archive.raspberrypi.com/debian/\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/raspberrypi-archive-keyring.pgp\n')
     host_sources=base/'apt.sources';host_sources.write_text(sources.read_text().replace('/usr/share/keyrings/raspberrypi-archive-keyring.pgp',str(keyring)))

@@ -1,0 +1,121 @@
+name: Publish image prerelease
+on:
+  workflow_dispatch:
+    inputs:
+      hdmi_run:
+        description: Successful HDMI image build run ID
+        required: true
+        default: '42666751880'
+      dsi_run:
+        description: Successful Waveshare image build run ID
+        required: true
+        default: '42667195577'
+      tag:
+        description: New prerelease tag
+        required: true
+        default: v0.1.0-alpha.1
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HDMI_RUN: ${{ inputs.hdmi_run }}
+          DSI_RUN: ${{ inputs.dsi_run }}
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          runs=[]
+          for key in ['HDMI_RUN','DSI_RUN']:
+              run=os.environ[key]
+              if not run.isdigit():raise SystemExit('Run IDs must be numeric')
+              value=json.loads(subprocess.check_output(['gh','run','view',run,'--repo',os.environ['GITHUB_REPOSITORY'],'--json','conclusion,headSha,workflowName']))
+              if value['conclusion']!='success' or value['workflowName']!='Build flashable image':raise SystemExit('Expected successful image build')
+              runs.append(value)
+          if runs[0]['headSha']!=runs[1]['headSha']:raise SystemExit('Images must come from the same source commit')
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('IMAGE_SOURCE_COMMIT='+runs[0]['headSha']+'\n')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: flipperos-rpi4-hdmi-orange
+          run-id: ${{ inputs.hdmi_run }}
+          github-token: ${{ github.token }}
+          path: build/release-input/hdmi
+      - uses: actions/download-artifact@v4
+        with:
+          name: flipperos-rpi4-waveshare-7-e-orange
+          run-id: ${{ inputs.dsi_run }}
+          github-token: ${{ github.token }}
+          path: build/release-input/waveshare-7-e
+      - name: Verify and split release assets
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          python3 scripts/prepare-release.py build/release-input build/release
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          HDMI_RUN: ${{ inputs.hdmi_run }}
+          DSI_RUN: ${{ inputs.dsi_run }}
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib,re,subprocess
+          repo=os.environ['GITHUB_REPOSITORY'];tag=os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v[0-9][A-Za-z0-9._-]*',tag):raise SystemExit('Invalid version tag')
+          notes=r'''Experimental Flipper OS images for Raspberry Pi 4 / 400. Built natively without QEMU.
+
+          Choose HDMI or Waveshare 7inch DSI Capacitive Touch Display 2 (1280x800, LCD E). Pi 400 uses HDMI. Both images use the orange launcher tint and default to Minimal.
+
+          ## Download and flash
+
+          GitHub limits each asset to under 2 GiB, so each image has two parts. Download BOTH parts for your display, plus `images.json` and the matching join script, into one folder.
+
+          Windows PowerShell (Waveshare):
+          ```powershell
+          powershell -ExecutionPolicy Bypass -File .\join-image.ps1 -Display waveshare-7-e
+          ```
+          For HDMI, use `-Display hdmi`.
+
+          Linux:
+          ```sh
+          bash join-image.sh waveshare-7-e
+          ```
+          For HDMI, use `bash join-image.sh hdmi`. Linux also needs the matching `.sha256` file.
+
+          The script joins the parts and checks the completed image's SHA-256. Flash the resulting `.img.zst` with Raspberry Pi Imager (Use custom), using a 16 GB or larger SD card. Flashing erases the selected card. Skip OS customization. The image does not automatically expand to fill larger cards.
+
+          Default login: `user` / `user`; hostname: `pi`. No personal Wi-Fi settings are included. Use Ethernet for initial SSH access or configure Wi-Fi locally. SSH host keys are generated on first boot.
+
+          ## Validation
+
+          Both builds passed profile/boot-file checks, native launcher rendering, profile clone/delete tests, display device-tree checks, and public-image identity checks. DSI and HDMI have worked on the development Pi, but these newly generated images still need a fresh SD-card boot test. Pi 400 has not been physically tested.
+
+          `SHA256SUMS` covers the parts and completed compressed images. `validation-reports.zip` includes both variants' reports and pinned source/package information. Original port code is MIT licensed; upstream software retains its own licenses.
+          '''
+          notes+='\nImage source commit: `'+os.environ['IMAGE_SOURCE_COMMIT']+'`.\n'
+          notes+='\nBuilds: https://github.com/'+repo+'/actions/runs/'+os.environ['HDMI_RUN']+' and https://github.com/'+repo+'/actions/runs/'+os.environ['DSI_RUN']+'\n'
+          path=pathlib.Path('build/release-notes.txt');path.write_text(notes)
+          current=subprocess.run(['gh','release','view',tag,'--repo',repo,'--json','isDraft,targetCommitish'],capture_output=True,text=True)
+          if current.returncode==0:
+              existing=json.loads(current.stdout)
+              if not existing['isDraft'] or existing['targetCommitish']!=os.environ['IMAGE_SOURCE_COMMIT']:raise SystemExit('Refusing to modify an existing published or unrelated release')
+          else:
+              subprocess.run(['gh','release','create',tag,'--repo',repo,'--target',os.environ['IMAGE_SOURCE_COMMIT'],'--draft','--prerelease','--title','Raspberry Pi images '+tag,'--notes-file',str(path)],check=True)
+          assets=sorted(pathlib.Path('build/release').iterdir())
+          for asset in assets:
+              subprocess.run(['gh','release','upload',tag,str(asset),'--repo',repo,'--clobber'],check=True)
+          published=json.loads(subprocess.check_output(['gh','release','view',tag,'--repo',repo,'--json','assets']))
+          sizes={a['name']:a['size'] for a in published['assets']}
+          if sizes!={p.name:p.stat().st_size for p in assets}:raise SystemExit('Release asset sizes do not match')
+          subprocess.run(['gh','release','edit',tag,'--repo',repo,'--draft=false','--prerelease','--notes-file',str(path)],check=True)
+          PY

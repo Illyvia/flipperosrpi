@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Configure the Flipper local display, its device tree, and its presentation."""
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[3]
+PRESETS = ROOT / 'usr/share/flipper-rpi/displays'
+SHARED = Path('/boot/flipper-rpi/display.json')
+FALLBACK = ROOT / 'etc/flipper-rpi/display.json'
+BEGIN = '# BEGIN FLIPPER DISPLAY'
+END = '# END FLIPPER DISPLAY'
+
+
+def validate(value):
+    fields = {'version', 'output', 'connector', 'mode', 'scale', 'rotation', 'tint', 'panel'}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError('Display configuration must contain exactly: '+', '.join(sorted(fields)))
+    c = dict(value)
+    if type(c['version']) is not int or c['version'] != 1:
+        raise ValueError('Unsupported display configuration version')
+    if c['output'] not in ('dsi', 'hdmi'):
+        raise ValueError('output must be dsi or hdmi')
+    prefix = 'DSI-' if c['output'] == 'dsi' else 'HDMI-A-'
+    if c['connector'] != 'auto' and not re.fullmatch(re.escape(prefix)+r'[1-9][0-9]*', str(c['connector'])):
+        raise ValueError('Connector does not match the selected output type')
+    if c['mode'] != 'preferred' and not re.fullmatch(r'[0-9]{3,4}x[0-9]{3,4}(?:@[0-9]+(?:\.[0-9]+)?Hz)?', str(c['mode'])):
+        raise ValueError('mode must be preferred or WIDTHxHEIGHT[@REFRESHHz]')
+    if c['scale'] != 'auto' and (type(c['scale']) is not int or not 1 <= c['scale'] <= 32):
+        raise ValueError('scale must be auto or an integer from 1 to 32')
+    if type(c['rotation']) is not int or c['rotation'] not in (0, 90, 180, 270):
+        raise ValueError('rotation must be 0, 90, 180, or 270')
+    if c['tint'] not in ('grayscale', 'orange'):
+        raise ValueError('tint must be grayscale or orange')
+    panel = c['panel']
+    if c['output'] == 'hdmi':
+        if panel is not None:
+            raise ValueError('HDMI configuration must have panel: null')
+    else:
+        if not isinstance(panel, dict) or set(panel) != {'overlay', 'params'}:
+            raise ValueError('DSI needs panel overlay and params')
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', str(panel['overlay'])):
+            raise ValueError('Invalid DSI overlay name')
+        if not isinstance(panel['params'], list) or not all(
+                isinstance(p, str) and re.fullmatch(r'[A-Za-z0-9_-]+(?:=[A-Za-z0-9_.+-]+)?', p)
+                for p in panel['params']):
+            raise ValueError('Invalid DSI overlay parameters')
+    return c
+
+
+def read_config(path=None):
+    path = Path(path) if path else (SHARED if SHARED.exists() else FALLBACK)
+    return validate(json.loads(path.read_text()))
+
+
+def atomic_write(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
+        temp = Path(f.name)
+        try:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+            temp.chmod(0o644)
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
+def firmware_text(text, c):
+    c = validate(c)
+    text = re.sub(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'\n?', '', text, flags=re.S)
+    legacy = ('# Flipper Waveshare DSI panel\n[pi4]\ndisplay_auto_detect=0\n'
+              'dtoverlay=vc4-kms-v3d\ndtoverlay=vc4-kms-dsi-waveshare-panel,8_0_inch\n[all]\n')
+    text = text.replace(legacy, '')
+    if '# Flipper Waveshare DSI panel' in text:
+        raise ValueError('Legacy panel block was customized; remove that block manually before configuring')
+    block = [BEGIN, '[all]', 'display_auto_detect=0', 'dtoverlay=vc4-kms-v3d']
+    if c['output'] == 'dsi':
+        block += ['[pi4]', 'dtoverlay='+','.join([c['panel']['overlay'], *c['panel']['params']])]
+    return text.rstrip()+'\n\n'+'\n'.join([*block, '[all]', END])+'\n'
+
+
+def select_output(c, outputs, headless=False):
+    prefix = 'HEADLESS-' if headless else ('DSI-' if c['output'] == 'dsi' else 'HDMI-A-')
+    matches = [o for o in outputs if o['name'].startswith(prefix)
+               and (headless or c['connector'] == 'auto' or o['name'] == c['connector'])
+               and (o.get('current_mode') or o.get('modes'))]
+    if not matches:
+        raise ValueError('No connected '+c['output'].upper()+' output matches '+c['connector'])
+    return sorted(matches, key=lambda o: o['name'])[0]
+
+
+def output_plan(c, output):
+    if c['mode'] == 'preferred':
+        mode = output.get('current_mode') or output['modes'][0]
+        w, h = mode['width'], mode['height']
+    else:
+        w, h = map(int, c['mode'].split('@')[0].split('x'))
+    if c['rotation'] in (90, 270):
+        w, h = h, w
+    scale = max(1, min(w // 256, h // 144)) if c['scale'] == 'auto' else c['scale']
+    if w / scale < 256 or h / scale < 144:
+        raise ValueError('Selected mode and scale cannot fit the 256x144 interface')
+    return {'name': output['name'], 'scale': scale,
+            'transform': 'normal' if c['rotation'] == 0 else str(c['rotation'])}
+
+
+def sway_config(config_path):
+    command = shlex.join([sys.executable, str(Path(__file__).resolve()), '--config', str(config_path), 'client'])
+    return '\n'.join(['output * bg #000000 solid_color', 'output * scale_filter nearest',
+                      'seat * hide_cursor 2000', 'xwayland disable',
+                      'for_window [app_id="net.flipper.flipctl"] fullscreen enable',
+                      'exec '+command, ''])
+
+
+def sway(*args):
+    return subprocess.check_output(['swaymsg', *args], text=True)
+
+
+def run_client(c):
+    # The headless adapter is for host visual tests only, never hardware setup.
+    headless = os.environ.get('WLR_BACKENDS') == 'headless' and os.environ.get('FLIPPER_DISPLAY_HEADLESS_TEST') == '1'
+    output = None
+    for _ in range(30):
+        try:
+            output = select_output(c, json.loads(sway('-t', 'get_outputs')), headless)
+            break
+        except ValueError:
+            time.sleep(1)
+    if output is None:
+        raise ValueError('Waiting for a connected '+c['output'].upper()+' display timed out')
+    plan = output_plan(c, output)
+    name = plan['name']
+    commands = ['output '+name+' enable']
+    if c['mode'] != 'preferred': commands += ['output '+name+' mode '+c['mode']]
+    commands += ['output '+name+' transform '+plan['transform'],
+                 'output '+name+' scale '+str(plan['scale'])]
+    for other in json.loads(sway('-t', 'get_outputs')):
+        if other['name'] != name: commands += ['output '+other['name']+' disable']
+    commands += ['input type:touch map_to_output '+name]
+    response = json.loads(sway('; '.join(commands)))
+    if not all(r.get('success') for r in response):
+        raise ValueError('Compositor rejected display configuration: '+json.dumps(response))
+    actual = next(o for o in json.loads(sway('-t', 'get_outputs')) if o['name'] == name)
+    width, height = actual['rect']['width'], actual['rect']['height']
+    if not (256 <= width <= 4096 and 144 <= height <= 4096):
+        raise ValueError('Configured logical display size is outside renderer limits')
+    env = dict(os.environ, FLIPPER_WL_SURFACE_WIDTH=str(width),
+               FLIPPER_WL_SURFACE_HEIGHT=str(height), FLIPPER_WL_TINT=c['tint'])
+    print('Flipper display: '+json.dumps({**plan, 'surface': [width, height], 'tint': c['tint']}), flush=True)
+    try:
+        return subprocess.call([env.get('FLIPCTL_BIN', '/usr/bin/flipctl'), '--wayland', '--remote',
+                                '127.0.0.1:8899', '--assets', '/usr/share/flipctl/assets/remote'], env=env)
+    finally:
+        with contextlib.suppress(Exception): sway('exit')
+
+
+def kernel_plan(root, version, c, dtmerge='/usr/local/bin/flipper-dtmerge', stage=None):
+    """Return staged file changes; callers commit only after every profile validates."""
+    root = Path(root)
+    dt = root/'usr/lib'/('linux-image-'+version)/'broadcom'
+    base = dt/'bcm2711-rpi-4-b.dtb'
+    if not base.exists(): return []
+    original = base.with_name(base.name+'.without-flipper-dsi')
+    source = original if original.exists() else base
+    token = root/'etc/kernel/entry-token'
+    nogfx = token.exists() and 'No-Graphics' in token.read_text()
+    changes = [] if original.exists() else [(original, base.read_bytes())]
+    if c['output'] == 'hdmi' or nogfx:
+        changes.append((base, source.read_bytes()))
+    else:
+        panel = root/'usr/lib'/('linux-image-'+version)/'overlays'/(c['panel']['overlay']+'.dtbo')
+        if not panel.exists(): panel = Path('/boot/firmware/overlays')/panel.name
+        if not panel.is_file(): raise ValueError('Missing panel overlay: '+panel.name)
+        with tempfile.NamedTemporaryFile(dir=stage, suffix='.dtb') as f:
+            subprocess.run([str(dtmerge), str(source), f.name, str(panel), *c['panel']['params']], check=True)
+            changes.append((base, Path(f.name).read_bytes()))
+    return changes
+
+
+def apply_to_device(c, config_path):
+    if os.geteuid() != 0: raise ValueError('Use sudo to configure the display')
+    if 'IMAGE_ID=flipperos-rpi4' not in Path('/etc/os-release').read_text():
+        raise ValueError('Hardware setup is supported on the Flipper OS Pi port')
+    model = Path('/proc/device-tree/model').read_text().rstrip('\0')
+    if c['output'] == 'dsi' and '400' in model:
+        raise ValueError('Pi 400 has no exposed DSI connector; choose HDMI')
+    if os.environ.get('FLIPPER_PRIVATE_MOUNT_NS') != '1':
+        os.execvp('unshare', ['unshare', '--mount', '--propagation', 'private', 'env',
+                             'FLIPPER_PRIVATE_MOUNT_NS=1', sys.executable, *sys.argv])
+    device = subprocess.check_output(['findmnt', '-no', 'SOURCE', '/'], text=True).strip().split('[')[0]
+    if not re.fullmatch(r'/dev/mmcblk[0-9]+p[0-9]+|/dev/sd[a-z]+[0-9]+|/dev/nvme[0-9]+n[0-9]+p[0-9]+', device):
+        raise ValueError('Cannot identify the running Pi root device')
+    with open('/run/flipper-display.lock', 'w') as lock, tempfile.TemporaryDirectory(prefix='flipper-display.', dir='/run') as temp:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        top = Path(temp)/'top'; top.mkdir()
+        subprocess.run(['mount', '-t', 'btrfs', '-o', 'subvolid=5', device, str(top)], check=True)
+        readonly = []; backups = []
+        try:
+            roots = [*top.glob('@*'), *(top/'@stock-snapshots').glob('@*')]
+            roots = [r for r in roots if (r/'etc/os-release').is_file()
+                     and 'IMAGE_ID=flipperos-rpi4' in (r/'etc/os-release').read_text()]
+            changes = []
+            for root in roots:
+                for dt in (root/'usr/lib').glob('linux-image-*'):
+                    changes += kernel_plan(root, dt.name.removeprefix('linux-image-'), c, stage=temp)
+            firmware = Path('/boot/firmware/config.txt')
+            changes += [(firmware, firmware_text(firmware.read_text(), c).encode()),
+                        (Path(config_path), (json.dumps(c, indent=2)+'\n').encode())]
+            for root in roots:
+                prop = subprocess.check_output(['btrfs', 'property', 'get', str(root), 'ro'], text=True).strip()
+                if prop == 'ro=true':
+                    subprocess.run(['btrfs', 'property', 'set', str(root), 'ro', 'false'], check=True)
+                    readonly.append(root)
+            for path, data in changes:
+                backups.append((path, path.read_bytes() if path.exists() else None))
+                atomic_write(path, data)
+            os.sync()
+        except Exception:
+            for path, old in reversed(backups):
+                if old is None: path.unlink(missing_ok=True)
+                else: atomic_write(path, old)
+            raise
+        finally:
+            for root in readonly: subprocess.run(['btrfs', 'property', 'set', str(root), 'ro', 'true'], check=True)
+            subprocess.run(['umount', str(top)], check=True)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--config', type=Path)
+    sub = p.add_subparsers(dest='command', required=True)
+    sub.add_parser('show'); sub.add_parser('validate'); sub.add_parser('session'); sub.add_parser('client')
+    kernel = sub.add_parser('kernel'); kernel.add_argument('version')
+    configure = sub.add_parser('configure')
+    source = configure.add_mutually_exclusive_group()
+    source.add_argument('--preset', choices=['hdmi', 'waveshare-7-e'])
+    source.add_argument('--from-file', type=Path, help='custom validated display JSON')
+    configure.add_argument('--tint', choices=['grayscale', 'orange'])
+    configure.add_argument('--connector'); configure.add_argument('--mode')
+    configure.add_argument('--scale'); configure.add_argument('--rotation', type=int)
+    a = p.parse_args()
+    path = a.config or (SHARED if SHARED.exists() else FALLBACK)
+    if a.command == 'configure':
+        c = read_config(a.from_file) if a.from_file else (read_config(PRESETS/(a.preset+'.json')) if a.preset else read_config(path))
+        for name in ['tint', 'connector', 'mode', 'rotation']:
+            if getattr(a, name) is not None: c[name] = getattr(a, name)
+        if a.scale is not None: c['scale'] = 'auto' if a.scale == 'auto' else int(a.scale)
+        c = validate(c)
+        # A shared setting survives profile changes and factory resets.
+        path = a.config or SHARED
+        apply_to_device(c, path)
+        print('Saved '+str(path)+'. Reboot to activate hardware changes; restart flipctl-display.service for tint-only changes.')
+        return
+    c = read_config(path)
+    if a.command in ('show', 'validate'):
+        print(json.dumps(c, indent=2)); return
+    if a.command == 'kernel':
+        if not re.fullmatch(r'[A-Za-z0-9_.+-]+', a.version): raise ValueError('Invalid kernel release')
+        for dest, data in kernel_plan('/', a.version, c): atomic_write(dest, data)
+    elif a.command == 'session':
+        runtime = Path(os.environ['XDG_RUNTIME_DIR'])/'flipper-display-sway.conf'
+        atomic_write(runtime, sway_config(path).encode())
+        os.execvp('dbus-run-session', ['dbus-run-session', '--', 'sway', '--config', str(runtime)])
+    elif a.command == 'client':
+        raise SystemExit(run_client(c))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        print('flipper-display: '+str(error), file=sys.stderr)
+        raise SystemExit(1)

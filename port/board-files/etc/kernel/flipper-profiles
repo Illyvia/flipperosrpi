@@ -1,0 +1,6 @@
+# Pi 4/400: actual Flipper OS profile roots and Pi device-tree overlays.
+desktop|Desktop|rootflags=subvol=@Desktop||!vc4-kms-v3d|KDE desktop
+ tvbox|TV Media Box|rootflags=subvol=@TV-Media-Box||!vc4-kms-v3d|Kodi and HDMI CEC
+ router|Router|rootflags=subvol=@Router||!vc4-kms-v3d|Pi Ethernet WAN and Wi-Fi LAN
+ minimal|Minimal|rootflags=subvol=@Minimal||!vc4-kms-v3d|Minimal Flipper OS
+ nogfx|No Graphics|rootflags=subvol=@No-Graphics||!rpi4-no-graphics|Graphics hardware disabled

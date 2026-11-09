@@ -1,0 +1,28 @@
+{
+  "id": "rpi4-arm64",
+  "models": [
+    "Raspberry Pi 4 Model B",
+    "Raspberry Pi 400"
+  ],
+  "soc": "BCM2711",
+  "userspace_architecture": "arm64",
+  "rust_target": "aarch64-unknown-linux-gnu",
+  "baseline": "Official Flipper OS stock build 1328 (Debian Trixie ARM64)",
+  "kernel_defconfig": "bcm2711_defconfig",
+  "device_trees": [
+    "bcm2711-rpi-4-b.dtb",
+    "bcm2711-rpi-400.dtb"
+  ],
+  "bootable_image_implemented": true,
+  "execution": "native on physical Raspberry Pi; no QEMU",
+  "firmware_kernel_setting": "u-boot.bin",
+  "profile_kernel": "/usr/lib/modules/<release>/vmlinuz",
+  "kernel_release": "6.18.60+rpt-rpi-v8",
+  "initial_profile": "Minimal",
+  "minimum_sd_size_gb": 16,
+  "image_size_bytes": 8589934592,
+  "root_filesystem": "btrfs",
+  "hardware_boot_verified": true,
+  "verified_hardware": "Raspberry Pi 4 Model B Rev 1.5 with Waveshare 7inch DSI LCD (E), updated port components",
+  "pi400_hardware_boot_verified": false
+}

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Count a profile attempt before systemd starts. Reset only the early-kernel watchdog.
+case "$1" in prereqs) exit 0 ;; esac
+. /etc/flipper-rpi-image.conf
+modprobe btrfs || exit 0
+mkdir -p /run/flipper-boot-top /run/flipper-firmware
+if mount -t btrfs -o subvolid=5 "UUID=$ROOT_UUID" /run/flipper-boot-top; then
+ sv=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^rootflags=subvol=//p' | tail -1)
+ rel=$(uname -r)
+ . /usr/lib/flipper-blsname.sh
+ for f in /run/flipper-boot-top/boot/loader/entries/*.conf; do
+  [ -f "$f" ] || continue
+  [ "$(entry_subvol_of "$f")" = "$sv" ] || continue
+  [ "$(sed -n 's/^version[[:space:]]*//p' "$f")" = "$rel" ] || continue
+  printf '%s\n' "$(entry_id_of "$f")" >/run/flipper-boot-entry
+  decrement_entry "$f" >/dev/null
+  break
+ done
+ sync; umount /run/flipper-boot-top
+fi
+if mount -t vfat "UUID=$FIRMWARE_UUID" /run/flipper-firmware; then
+ printf '\275\001\000\001' >/run/flipper-firmware/flipper-bootcount.bin
+ sync; umount /run/flipper-firmware
+fi

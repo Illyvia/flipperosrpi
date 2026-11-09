@@ -1,0 +1,12 @@
+[Unit]
+Description=Pi Router LAN throughput server
+After=NetworkManager.service
+Wants=NetworkManager.service
+[Service]
+ExecStart=/usr/bin/iperf3 -s -B 192.168.50.1
+SuccessExitStatus=1
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,328 @@
+diff --git a/bin/flipctl/Cargo.toml b/bin/flipctl/Cargo.toml
+index cc0ce0a..9472bb7 100644
+--- a/bin/flipctl/Cargo.toml
++++ b/bin/flipctl/Cargo.toml
+@@ -6,6 +6,7 @@ license.workspace = true
+ description = "Walks every flipper-ui component on the panel, a serial console or a browser"
+ 
+ [features]
++raspberry-pi = ["flipper-ui/raspberry-pi"]
+ default = []
+ device = ["flipper-ui/device"]
+ remote = ["flipper-ui/remote"]
+diff --git a/bin/flipctl/src/main.rs b/bin/flipctl/src/main.rs
+index 4410331..a8bc99c 100644
+--- a/bin/flipctl/src/main.rs
++++ b/bin/flipctl/src/main.rs
+@@ -7354,7 +7354,10 @@ fn panel(
+                             act: DialogAct::Uninstall(at),
+                         });
+                     }
+-                } else if key == FlipperKey::View && screen.get_screen() == Screen::Idle {
++                } else if (key == FlipperKey::View
++                    || (cfg!(feature = "raspberry-pi") && key == FlipperKey::Ok))
++                    && screen.get_screen() == Screen::Idle
++                {
+                     screen.set_screen(Screen::Menu);
+                     eprintln!("screen         menu");
+                 } else if key == FlipperKey::Ok && screen.get_screen() == Screen::Menu {
+diff --git a/crates/flipper-ui/Cargo.toml b/crates/flipper-ui/Cargo.toml
+index 19812ba..2167465 100644
+--- a/crates/flipper-ui/Cargo.toml
++++ b/crates/flipper-ui/Cargo.toml
+@@ -9,6 +9,8 @@ license = "MIT"
+ description = "Shared UI component library for the Flipper One 256x144 panel"
+ 
+ [features]
++# Raspberry Pi board port: allow the supported BCM2711 kernel series.
++raspberry-pi = []
+ default = []
+ # DRM/KMS panel sink and raw evdev input. Off by default so host-side tests and
+ # the golden-image harness build without touching /dev.
+diff --git a/crates/flipper-ui/src/boot.rs b/crates/flipper-ui/src/boot.rs
+index c3eff3e..08bd892 100644
+--- a/crates/flipper-ui/src/boot.rs
++++ b/crates/flipper-ui/src/boot.rs
+@@ -139,7 +139,10 @@ pub enum Kernels {
+ /// nothing anybody wants, and a menu is a list of things worth choosing. They are
+ /// hidden rather than removed, because the files are not ours to delete, and
+ /// `--all-kernels` brings them back for a bisect.
++#[cfg(not(feature = "raspberry-pi"))]
+ pub const MIN_KERNEL: (u32, u32) = (7, 0);
++#[cfg(feature = "raspberry-pi")]
++pub const MIN_KERNEL: (u32, u32) = (6, 18);
+ 
+ /// A boot entry as its own file states it, before the profile it names is looked up.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+@@ -229,11 +232,11 @@ fn order(c: &Conf) -> Order {
+ 
+ /// A kernel release as major, minor and patch, for comparing two of them.
+ ///
+-/// Only the numbers before the first dash: what follows is a git-describe suffix, and
++/// Only the numbers before the first dash or plus sign: what follows is a git-describe suffix, and
+ /// `libs/flipper-blsname.sh` reads the same three numbers out of it in shell. A release
+ /// with no numbers ranks below every real one and is still bootable by name.
+ pub fn version_rank(version: &str) -> (u32, u32, u32) {
+-    let numbers = version.split('-').next().unwrap_or_default();
++    let numbers = version.split(['-', '+']).next().unwrap_or_default();
+     let mut parts = numbers.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+     (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+ }
+@@ -605,7 +608,7 @@ pub fn version_at_least(version: &str, min: (u32, u32)) -> bool {
+     // A release that will not parse ranks 0 and would fail every comparison, so it is
+     // answered before the numbers are looked at.
+     if version
+-        .split('-')
++        .split(['-', '+'])
+         .next()
+         .and_then(|n| n.split('.').next())
+         .is_none_or(|major| major.parse::<u32>().is_err())
+@@ -1373,7 +1376,7 @@ pub fn split_counter(name: &str) -> (String, Option<u32>) {
+     let stem = name.strip_suffix(".conf").unwrap_or(name);
+     match stem.split_once('+') {
+         Some((id, counter)) => {
+-            (id.to_string(), counter.split('-').next().and_then(|left| left.parse::<u32>().ok()))
++            (id.to_string(), counter.split(['-', '+']).next().and_then(|left| left.parse::<u32>().ok()))
+         }
+         None => (stem.to_string(), None),
+     }
+@@ -1611,7 +1614,7 @@ pub fn parse_stamp_for_test(s: &str) -> Option<i64> {
+ /// from one tool in one format, and the comparison is against wall-clock seconds.
+ fn parse_stamp(s: &str) -> Option<i64> {
+     let (date, time) = s.trim().split_once(' ')?;
+-    let mut d = date.split('-');
++    let mut d = date.split(['-', '+']);
+     let (y, m, day) = (
+         d.next()?.parse::<i64>().ok()?,
+         d.next()?.parse::<i64>().ok()?,
+@@ -2377,6 +2380,14 @@ pub fn size_parts(s: &str) -> (String, String) {
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn pi_kernel_versions_keep_patch_component() {
++        assert_eq!(super::version_rank("6.18.60+rpt-rpi-v8"), (6, 18, 60));
++        assert!(super::version_rank("6.18.60+rpt-rpi-v8") > super::version_rank("6.18.59+rpt-rpi-v8"));
++        assert!(super::version_at_least("6.18.60+rpt-rpi-v8", (6, 18)));
++        assert!(!super::version_at_least("6.17.99+rpt-rpi-v8", (6, 18)));
++    }
++
+     use super::{env_supath, INSTALLER_CMDLINE};
+ 
+     /// One console, and it is the wire rather than the panel.
+diff --git a/crates/flipper-ui/src/wl_sink.rs b/crates/flipper-ui/src/wl_sink.rs
+index a04d933..d417d07 100644
+--- a/crates/flipper-ui/src/wl_sink.rs
++++ b/crates/flipper-ui/src/wl_sink.rs
+@@ -18,6 +18,7 @@ use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+ 
+ use wayland_client::protocol::{
+     wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
++    wl_touch,
+ };
+ use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, QueueHandle, WEnum};
+ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+@@ -39,6 +40,9 @@ pub struct WlSink {
+     next: usize,
+     w: u16,
+     h: u16,
++    surface_w: u16,
++    surface_h: u16,
++    palette: [[u8; 4]; 256],
+ }
+ 
+ struct Buffer {
+@@ -61,14 +65,71 @@ struct State {
+     // arrives that many times: one Down moves the selection twice, or acts on the
+     // screen just left as well as the one arrived at.
+     keyboard: Option<wl_keyboard::WlKeyboard>,
++    touch: Option<wl_touch::WlTouch>,
++    contact: Option<TouchContact>,
+     busy: [bool; BUFFERS],
+     keys: VecDeque<KeyEvent>,
+ }
+ 
++struct TouchContact {
++    id: i32,
++    start: (f64, f64),
++    last: (f64, f64),
++    time: u32,
++}
++
++// Coordinates are compositor logical pixels (the Pi session uses 5x scaling).
++fn touch_key(dx: f64, dy: f64, duration_ms: u32) -> FlipperKey {
++    if dx.abs().max(dy.abs()) >= 12.0 {
++        if dx.abs() > dy.abs() {
++            if dx > 0.0 { FlipperKey::Right } else { FlipperKey::Left }
++        } else if dy > 0.0 { FlipperKey::Down } else { FlipperKey::Up }
++    } else if duration_ms >= 600 {
++        FlipperKey::Back
++    } else {
++        FlipperKey::Ok
++    }
++}
++
++fn presentation_size(w: u16, h: u16, width: Option<&str>, height: Option<&str>) -> io::Result<(u16, u16)> {
++    let dimension = |value: Option<&str>, minimum: u16| -> io::Result<u16> {
++        let n = match value {
++            None => minimum,
++            Some(s) => s.parse::<u16>().map_err(|_| io::Error::other("invalid Wayland surface dimension"))?,
++        };
++        if !(minimum..=4096).contains(&n) {
++            return Err(io::Error::other("Wayland surface must fit the UI and be at most 4096 pixels"));
++        }
++        Ok(n)
++    };
++    Ok((dimension(width, w)?, dimension(height, h)?))
++}
++
++// wl_shm Xrgb8888 uses little-endian B,G,R,X bytes on the Pi.
++fn presentation_palette(tint: &str) -> io::Result<[[u8; 4]; 256]> {
++    let white = match tint {
++        "grayscale" => [255u16, 255u16, 255u16],
++        "orange" => [255u16, 130u16, 0u16],
++        _ => return Err(io::Error::other("FLIPPER_WL_TINT must be grayscale or orange")),
++    };
++    Ok(std::array::from_fn(|i| {
++        let channel = |n: u16| ((i as u16 * n + 127) / 255) as u8;
++        [channel(white[2]), channel(white[1]), channel(white[0]), 255]
++    }))
++}
++
+ impl WlSink {
+     /// Connect to the compositor named by the environment and take a fullscreen
+     /// surface of `w` by `h`.
+     pub fn new(w: u16, h: u16) -> io::Result<Self> {
++        let (surface_w, surface_h) = if cfg!(feature = "raspberry-pi") {
++            presentation_size(w, h, std::env::var("FLIPPER_WL_SURFACE_WIDTH").ok().as_deref(),
++                              std::env::var("FLIPPER_WL_SURFACE_HEIGHT").ok().as_deref())?
++        } else { (w, h) };
++        let tint = if cfg!(feature = "raspberry-pi") {
++            std::env::var("FLIPPER_WL_TINT").unwrap_or_else(|_| "grayscale".into())
++        } else { "grayscale".into() };
++        let palette = presentation_palette(&tint)?;
+         let conn = Connection::connect_to_env().map_err(io::Error::other)?;
+         let (globals, queue) = wayland_client::globals::registry_queue_init::<State>(&conn)
+             .map_err(io::Error::other)?;
+@@ -105,17 +166,17 @@ impl WlSink {
+         // Exactly panel-sized, and say so both ways: on the device the output is
+         // 256x144 anyway, and on a desktop this keeps the window 1:1 rather than
+         // stretching a 256 pixel wide UI across a monitor.
+-        toplevel.set_min_size(i32::from(w), i32::from(h));
+-        toplevel.set_max_size(i32::from(w), i32::from(h));
++        toplevel.set_min_size(i32::from(surface_w), i32::from(surface_h));
++        toplevel.set_max_size(i32::from(surface_w), i32::from(surface_h));
+         toplevel.set_fullscreen(None);
+         surface.commit();
+ 
+         let mut buffers = Vec::with_capacity(BUFFERS);
+         for i in 0..BUFFERS {
+-            buffers.push(Buffer::new(&shm, &qh, w, h, i)?);
++            buffers.push(Buffer::new(&shm, &qh, surface_w, surface_h, i)?);
+         }
+ 
+-        let mut sink = Self { conn, queue, state, surface, buffers, next: 0, w, h };
++        let mut sink = Self { conn, queue, state, surface, buffers, next: 0, w, h, surface_w, surface_h, palette };
+         // The first attach has to wait for the first configure, or the compositor
+         // is entitled to ignore it.
+         for _ in 0..50 {
+@@ -172,18 +233,19 @@ impl FrameSink for WlSink {
+         let dst = unsafe { std::slice::from_raw_parts_mut(buf.map, buf.len) };
+         let w = usize::from(self.w);
+         for (y, row) in frame.pixels.chunks(w).enumerate() {
+-            let base = y * w * 4;
++            let base = ((y + usize::from((self.surface_h - self.h) / 2)) * usize::from(self.surface_w)
++                        + usize::from((self.surface_w - self.w) / 2)) * 4;
+             for (x, &Gray8(v)) in row.iter().enumerate() {
+                 let p = base + x * 4;
+-                dst[p] = v;
+-                dst[p + 1] = v;
+-                dst[p + 2] = v;
+-                dst[p + 3] = 0xFF;
++                dst[p..p + 4].copy_from_slice(&self.palette[usize::from(v)]);
+             }
+         }
+ 
+         self.state.busy[slot] = true;
+         self.surface.attach(Some(&buf.buffer), 0, 0);
++        let damage = if self.surface_h != self.h || self.surface_w != self.w {
++            Rect { x: 0, y: 0, w: self.surface_w, h: self.surface_h }
++        } else { damage };
+         self.surface.damage_buffer(
+             i32::from(damage.x),
+             i32::from(damage.y),
+@@ -340,10 +402,74 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
+                 (false, Some(k)) => k.release(),
+                 (false, None) => {}
+             }
++            if cfg!(feature = "raspberry-pi") {
++                match (caps.contains(wl_seat::Capability::Touch), state.touch.take()) {
++                    (true, None) => state.touch = Some(seat.get_touch(qh, ())),
++                    (true, Some(t)) => state.touch = Some(t),
++                    (false, Some(t)) => { t.release(); state.contact = None; }
++                    (false, None) => {}
++                }
++            }
+         }
+     }
+ }
+ 
++impl Dispatch<wl_touch::WlTouch, ()> for State {
++    fn event(state: &mut Self, _: &wl_touch::WlTouch, event: wl_touch::Event,
++             _: &(), _: &Connection, _: &QueueHandle<Self>) {
++        match event {
++            wl_touch::Event::Down { id, x, y, time, .. } if state.contact.is_none() => {
++                state.contact = Some(TouchContact { id, start: (x, y), last: (x, y), time });
++            }
++            wl_touch::Event::Motion { id, x, y, .. } => {
++                if let Some(c) = state.contact.as_mut().filter(|c| c.id == id) { c.last = (x, y); }
++            }
++            wl_touch::Event::Up { id, time, .. } => {
++                if state.contact.as_ref().is_some_and(|c| c.id == id) {
++                    let c = state.contact.take().unwrap();
++                    let key = touch_key(c.last.0 - c.start.0, c.last.1 - c.start.1,
++                                        time.wrapping_sub(c.time));
++                    state.keys.push_back(KeyEvent { key, down: true });
++                    state.keys.push_back(KeyEvent { key, down: false });
++                }
++            }
++            wl_touch::Event::Cancel => state.contact = None,
++            _ => {}
++        }
++    }
++}
++
++#[cfg(test)]
++mod pi_touch_tests {
++    use super::*;
++    #[test]
++    fn presentation_preserves_channel_order_and_black_levels() {
++        let gray = presentation_palette("grayscale").unwrap();
++        let orange = presentation_palette("orange").unwrap();
++        assert_eq!(gray[128], [128, 128, 128, 255]);
++        assert_eq!(orange[0], [0, 0, 0, 255]);
++        assert_eq!(orange[255], [0, 130, 255, 255]);
++        assert_eq!(orange[128], [0, 65, 128, 255]);
++        assert!(presentation_palette("invalid").is_err());
++    }
++    #[test]
++    fn presentation_accepts_dsi_and_hdmi_letterboxing() {
++        assert_eq!(presentation_size(256, 144, Some("256"), Some("160")).unwrap(), (256, 160));
++        assert_eq!(presentation_size(256, 144, Some("274"), Some("154")).unwrap(), (274, 154));
++        assert!(presentation_size(256, 144, Some("255"), None).is_err());
++        assert!(presentation_size(256, 144, None, Some("4097")).is_err());
++    }
++    #[test]
++    fn gestures_match_the_flipper_button_model() {
++        assert_eq!(touch_key(2.0, -2.0, 100), FlipperKey::Ok);
++        assert_eq!(touch_key(2.0, -2.0, 600), FlipperKey::Back);
++        assert_eq!(touch_key(0.0, -20.0, 200), FlipperKey::Up);
++        assert_eq!(touch_key(0.0, 20.0, 200), FlipperKey::Down);
++        assert_eq!(touch_key(-20.0, 3.0, 200), FlipperKey::Left);
++        assert_eq!(touch_key(20.0, 3.0, 800), FlipperKey::Right);
++    }
++}
++
+ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+     fn event(
+         state: &mut Self,

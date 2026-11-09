@@ -1,0 +1,149 @@
+diff --git a/boot/bootmeth_bls.c b/boot/bootmeth_bls.c
+index 0d40022f..6e5e73e6 100644
+--- a/boot/bootmeth_bls.c
++++ b/boot/bootmeth_bls.c
+@@ -31,6 +31,7 @@
+ #include <sort.h>
+ #include <alist.h>
+ #include <linux/sizes.h>
++#include <linux/ctype.h>
+ 
+ #define BLS_DIR		"loader/entries"
+ #define BLS_SUFFIX	".conf"
+@@ -82,6 +83,99 @@ static int bls_check(struct udevice *dev, struct bootflow_iter *iter)
+ 	return 0;
+ }
+ 
++
++/* Keep the on-disk profile preference; filename bands alone are not boot order. */
++struct bls_order {
++ char *path;
++ char *body;
++ const char *key;
++ const char *version;
++};
++
++static int bls_version_cmp(const char *a, const char *b)
++{
++ while (*a && *b) {
++  if (isdigit(*a) && isdigit(*b)) {
++   const char *ae, *be;
++   size_t an, bn;
++   int cmp;
++   while (*a == '0') a++;
++   while (*b == '0') b++;
++   ae = a; be = b;
++   while (isdigit(*ae)) ae++;
++   while (isdigit(*be)) be++;
++   an = ae - a; bn = be - b;
++   if (an != bn) return an > bn ? 1 : -1;
++   cmp = memcmp(a, b, an);
++   if (cmp) return cmp;
++   a = ae; b = be;
++  } else {
++   if (*a != *b) return (unsigned char)*a - (unsigned char)*b;
++   a++; b++;
++  }
++ }
++ return (unsigned char)*a - (unsigned char)*b;
++}
++
++static int bls_order_cmp(const void *ap, const void *bp)
++{
++ const struct bls_order *a = ap, *b = bp;
++ int cmp = strcmp(b->key, a->key);
++ if (!cmp) cmp = bls_version_cmp(a->version, b->version);
++ return cmp ? cmp : strcmp(a->path, b->path);
++}
++
++static int bls_order_entries(struct alist *paths, struct blk_desc *desc,
++                            struct bootflow *bflow)
++{
++ struct bls_order *order;
++ char **arr = paths->data;
++ uint i;
++ int ret = 0;
++
++ order = calloc(paths->count, sizeof(*order));
++ if (!order) return -ENOMEM;
++ for (i = 0; i < paths->count; i++) {
++  loff_t size, actual;
++  char *cursor, *line;
++  order[i].path = arr[i];
++  order[i].key = "";
++  order[i].version = "";
++  ret = bootmeth_setup_fs(bflow, desc);
++  if (ret) goto out;
++  ret = fs_size(arr[i], &size);
++  if (ret) goto out;
++  if (size < 0 || size > SZ_64K) { ret = -E2BIG; goto out; }
++  order[i].body = malloc(size + 1);
++  if (!order[i].body) { ret = -ENOMEM; goto out; }
++  ret = bootmeth_setup_fs(bflow, desc);
++  if (ret) goto out;
++  ret = fs_read(arr[i], map_to_sysmem(order[i].body), 0, size, &actual);
++  if (ret) goto out;
++  order[i].body[actual] = '\0';
++  cursor = order[i].body;
++  while ((line = strsep(&cursor, "\n"))) {
++   char *value, *end;
++   while (isspace(*line)) line++;
++   value = line;
++   while (*value && !isspace(*value)) value++;
++   if (!*value) continue;
++   *value++ = '\0';
++   while (isspace(*value)) value++;
++   end = value + strlen(value);
++   while (end > value && isspace(end[-1])) *--end = '\0';
++   if (!strcmp(line, "sort-key")) order[i].key = value;
++   if (!strcmp(line, "version")) order[i].version = value;
++  }
++ }
++ qsort(order, paths->count, sizeof(*order), bls_order_cmp);
++ for (i = 0; i < paths->count; i++) arr[i] = order[i].path;
++out:
++ for (i = 0; i < paths->count; i++) free(order[i].body);
++ free(order);
++ return ret;
++}
++
+ /**
+  * bls_load_all() - Enumerate every BLS *.conf across all bootstd prefixes
+  *
+@@ -94,15 +188,8 @@ static int bls_check(struct udevice *dev, struct bootflow_iter *iter)
+  * a dedicated boot/XBOOTLDR/ESP partition and not a $BOOT as a directory.
+  * Sorting full paths is a deterministic-and-cheap stand-in.
+  *
+- * The Boot Loader Specification says entries should be sorted by sort-key
+- * (descending), then version (descending), then filename (descending). For
+- * the time being only the filename criterion is implemented, which is
+- * sufficient for most distros that encode kernel version into the filename.
+- *
+- * TODO: implement proper spec-compliant ordering. That requires reading
+- * each candidate entry, parsing its 'sort-key' and 'version' fields (the
+- * latter compared with strverscmp()-style logic), and only falling back to
+- * filename order when those tie.
++ * Entries prefer ascending sort-key, then descending kernel version and filename.
++ * The iterator indexes from the end to obtain descending preference order.
+  *
+  * @paths:	Receives the discovered full paths, sorted ascending
+  * @desc:	Block descriptor (used to re-mount per prefix)
+@@ -163,8 +250,7 @@ static int bls_load_all(struct alist *paths, struct blk_desc *desc,
+ 	}
+ 
+ 	if (paths->count)
+-		qsort(paths->data, paths->count, paths->obj_size,
+-		      strcmp_compar);
++		return bls_order_entries(paths, desc, bflow);
+ 
+ 	return 0;
+ }
+@@ -225,7 +311,7 @@ static int bls_read_bootflow(struct udevice *dev, struct bootflow *bflow,
+ 	if (seq >= (int)priv->paths.count)
+ 		return -ENOENT;
+ 
+-	/* Sorted ascending by full path; index from the end for newest-first. */
++	/* Sorted ascending by preference; index from the end for preferred-first. */
+ 	slot = alist_getw(&priv->paths, priv->paths.count - 1 - seq, char *);
+ 	fpath = *slot;
+ 	base = strrchr(fpath, '/');

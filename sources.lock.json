@@ -1,0 +1,23 @@
+{
+  "flipctl": {
+    "url": "https://github.com/flipperdevices/flipctl-slint.git",
+    "commit": "99d8ef816a190026a9ff8eec95f86fa95228d238"
+  },
+  "linux-build": {
+    "url": "https://github.com/flipperdevices/flipperone-linux-build-scripts.git",
+    "commit": "d21ab22ac67f02c2e817d2b6e7b99d2cc615bd90"
+  },
+  "btrfs-tools": {
+    "url": "https://github.com/flipperdevices/flipperos-btrfs-tools.git",
+    "commit": "d2934914483f84b656348e21b9efa40756e37283"
+  },
+  "raspberrypi-utils": {
+    "url": "https://github.com/raspberrypi/utils.git",
+    "commit": "8c49aa29fa476271da4aa47c7e5c07c0ada6767f"
+  },
+  "u-boot": {
+    "url": "https://github.com/flipperdevices/u-boot.git",
+    "branch": "rk3576",
+    "commit": "ec02432b1751e2749cc107477fbce20c0ed8c8b2"
+  }
+}

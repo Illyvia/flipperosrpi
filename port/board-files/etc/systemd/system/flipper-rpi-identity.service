@@ -1,0 +1,8 @@
+[Unit]
+Description=Shared Flipper Pi SSH identity across OS profiles
+Before=ssh.service
+RequiresMountsFor=/home
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/flipper-rpi-identity
+RemainAfterExit=yes

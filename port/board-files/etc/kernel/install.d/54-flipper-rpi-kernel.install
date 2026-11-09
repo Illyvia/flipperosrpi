@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+[ "$1" = add ] || exit 0
+ver=$2; img=$4; dest=/usr/lib/modules/$ver
+mkdir -p "$dest"
+# Pi kernel packages store a gzip image in /boot; BLS gets a self-contained raw Image.
+if [ "$img" != "$dest/vmlinuz" ]; then
+ if gzip -t "$img" 2>/dev/null; then gzip -dc "$img" > "$dest/vmlinuz"; else cp --reflink=auto "$img" "$dest/vmlinuz"; fi
+fi
+[ ! -f "/boot/config-$ver" ] || cp --reflink=auto "/boot/config-$ver" "$dest/config"
+dt=/usr/lib/linux-image-$ver/broadcom
+mkdir -p "$dt"
+for dir in /usr/lib/linux-image-$ver/overlays /boot/firmware/overlays; do
+ if [ -f "$dir/vc4-kms-v3d-pi4.dtbo" ]; then cp --reflink=auto "$dir/vc4-kms-v3d-pi4.dtbo" "$dt/vc4-kms-v3d.dtbo"; break; fi
+done
+dtc -@ -I dts -O dtb -o "$dt/rpi4-no-graphics.dtbo" /usr/share/flipper-rpi/rpi4-no-graphics.dts
+# The final display stage installs dtmerge. Keep hardware mode through kernel updates.
+if [ -x /usr/local/sbin/flipper-display ] && [ -x /usr/local/bin/flipper-dtmerge ]; then
+ /usr/local/sbin/flipper-display kernel "$ver"
+fi

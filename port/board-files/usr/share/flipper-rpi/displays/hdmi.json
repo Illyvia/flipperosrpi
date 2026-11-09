@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "output": "hdmi",
+  "connector": "auto",
+  "mode": "preferred",
+  "scale": "auto",
+  "rotation": 0,
+  "tint": "grayscale",
+  "panel": null
+}

@@ -1,0 +1,10 @@
+/dts-v1/;
+/plugin/;
+/ {
+ compatible = "brcm,bcm2711";
+ fragment@0 { target = <&vc4>; __overlay__ { status = "disabled"; }; };
+ fragment@1 { target = <&v3d>; __overlay__ { status = "disabled"; }; };
+ fragment@2 { target = <&hdmi0>; __overlay__ { status = "disabled"; }; };
+ fragment@3 { target = <&hdmi1>; __overlay__ { status = "disabled"; }; };
+ fragment@4 { target = <&hvs>; __overlay__ { status = "disabled"; }; };
+};

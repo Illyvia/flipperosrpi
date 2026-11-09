@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+import json,pathlib,os,re
+p=pathlib.Path('/boot/flipper-rpi-once-order.json');saved=json.loads(p.read_text())
+for f in pathlib.Path('/boot/loader/entries').glob('*.conf'):
+ ident=f.stem.split('+')[0]
+ if ident not in saved:continue
+ key=saved[ident]
+ if not re.fullmatch(r'[A-Za-z0-9_.-]+',key):raise SystemExit('Invalid saved boot sort key')
+ stat=f.stat();lines=f.read_text().splitlines();lines=[('sort-key '+key) if x.startswith('sort-key ') or x.startswith('sort-key\t') else x for x in lines]
+ f.write_text('\n'.join(lines)+'\n');os.utime(f,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+p.unlink();os.sync()

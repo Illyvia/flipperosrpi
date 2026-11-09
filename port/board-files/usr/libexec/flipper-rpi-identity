@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+install -d -m700 /home/.flipper-system
+[ -f /home/.flipper-system/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /home/.flipper-system/ssh_host_ed25519_key

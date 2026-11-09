@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in prereqs) exit 0 ;; esac
+. /usr/share/initramfs-tools/hook-functions
+for cmd in btrfs findmnt blkid flock jq zstd; do
+ path=$(command -v "$cmd"); copy_exec "$path"
+done
+mkdir -p "$DESTDIR/usr/lib" "$DESTDIR/usr/local/sbin" "$DESTDIR/etc"
+cp /usr/lib/flipper-*.sh "$DESTDIR/usr/lib/"
+for f in /usr/lib/flipper-*.awk; do [ ! -f "$f" ] || cp "$f" "$DESTDIR/usr/lib/"; done
+cp /etc/flipper-rpi-image.conf "$DESTDIR/etc/"
+for f in /usr/local/sbin/*; do [ ! -f "$f" ] || cp "$f" "$DESTDIR/usr/local/sbin/"; done

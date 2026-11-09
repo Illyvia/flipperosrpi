@@ -1,0 +1,58 @@
+#!/bin/sh
+# Pi cold-boot adapter. Profile files, BLS order and tools remain upstream's.
+set -eu
+. /usr/lib/flipper-btrfs.sh
+. /usr/lib/flipper-blsname.sh
+dry=0; arm=0; target=
+while [ $# -gt 0 ]; do
+ case "$1" in
+  --dry-run) dry=1 ;; --arm) arm=1 ;; --disarm) exit 0 ;; --no-pivot) : ;;
+  -d|--device) shift; need_device_arg "$#"; ROOTDEV=$1 ;;
+  --device=*) ROOTDEV=${1#*=} ;;
+  -h|--help) echo 'boot-profile [--dry-run] [-d DEVICE] ENTRY|@PROFILE: reboot Pi into a Flipper OS profile'; exit 0 ;;
+  --image|--initramfs|--kernel|--cmdline) die 'Raw kexec is unavailable on this Pi kernel; use the Pi recovery boot entry' ;;
+  -*) die "Unknown option $1" ;;
+  *) [ -z "$target" ] || die 'Only one target is accepted'; target=$1 ;;
+ esac
+ shift
+done
+[ -n "$target" ] || die 'Name an entry or @profile'
+case "$target" in *..*|*/*) die 'Invalid boot target' ;; esac
+need_root; need_btrfs; mount_top
+ENTRIES=$TOP/boot/loader/entries
+entry=
+for f in $(sorted_entries); do
+ case "$target" in
+  @*) [ "$(entry_subvol_of "$f")" = "$target" ] || continue ;;
+  *) [ "$(entry_id_of "$f")" = "${target%.conf}" ] || continue ;;
+ esac
+ entry=$f; break
+done
+[ -n "$entry" ] || die "No boot entry for $target"
+sv=$(entry_subvol_of "$entry");validate_profile_name "$sv"
+grep -q '^IMAGE_ID=flipperos-rpi4$' "$TOP/$sv/etc/os-release" || die 'This profile is not a Raspberry Pi Flipper OS build'
+k=$(sed -n 's/^linux[[:space:]]*//p' "$entry");i=$(sed -n 's/^initrd[[:space:]]*//p' "$entry")
+[ -f "$TOP$k" ] || die "Missing kernel: $k"
+[ -z "$i" ] || [ -f "$TOP$i" ] || die "Missing initramfs: $i"
+if [ "$dry" = 1 ]; then echo "Pi cold boot validated: $(entry_id_of "$entry") ($sv)";exit 0;fi
+# Upstream preloading is only an optimization; there is no kexec image to arm on Pi.
+[ "$arm" = 0 ] || exit 0
+[ "$(target_fsuuid)" = "$(booted_fsuuid)" ] || die 'Cold boot can only select the running Pi filesystem; use --dry-run for another card'
+state=$TOP/boot/flipper-rpi-once-order.json
+[ ! -e "$state" ] || die 'A one-time boot is already pending'
+python3 - "$ENTRIES" "$state" <<'PY'
+import pathlib,json,sys,os
+entries=pathlib.Path(sys.argv[1]);state=pathlib.Path(sys.argv[2]);saved={}
+for f in entries.glob('*.conf'):
+ key=next((x.split(None,1)[1] for x in f.read_text().splitlines() if x.split() and x.split()[0]=='sort-key'),None)
+ if key is not None:saved[f.stem.split('+')[0]]=key
+with state.open('x') as out:json.dump(saved,out);out.flush();os.fsync(out.fileno())
+PY
+id=$(entry_id_of "$entry")
+if ! set-boot-order --autoboot "$sv" || ! set-boot-order --kernel "$id"; then
+ /usr/libexec/flipper-rpi-restore-order
+ die 'Boot-order update failed; restored previous order'
+fi
+sync
+echo "Rebooting the physical Pi into $sv ($id)"
+systemctl reboot

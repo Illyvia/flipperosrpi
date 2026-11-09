@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore persistent boot order after a one-time Pi profile boot
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+Requires=flipper-bless-boot.service
+After=flipper-bless-boot.service boot-complete.target
+Wants=boot-complete.target
+ConditionPathExists=/boot/flipper-rpi-once-order.json
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/flipper-rpi-restore-order
+[Install]
+WantedBy=multi-user.target

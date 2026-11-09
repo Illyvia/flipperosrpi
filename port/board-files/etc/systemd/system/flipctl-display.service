@@ -1,0 +1,34 @@
+[Unit]
+Description=Flipper local display session (DSI or HDMI)
+After=systemd-user-sessions.service systemd-logind.service network.target
+Wants=systemd-logind.service
+Conflicts=flipctl.service getty@tty1.service
+
+[Service]
+User=user
+Group=user
+SupplementaryGroups=input video render dialout
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+RuntimeDirectory=flipctl
+RuntimeDirectoryMode=0700
+Environment=HOME=/home/user
+Environment=XDG_RUNTIME_DIR=/run/flipctl
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_DESKTOP=sway
+Environment=LIBSEAT_BACKEND=logind
+Environment=FLIPPER_BLS_MIN_KERNEL=6.18
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
+WorkingDirectory=/usr/share/flipctl
+ExecStart=/usr/local/sbin/flipper-display session
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+Alias=flipctl-dsi.service

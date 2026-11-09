@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pi 4/400 expose two HDMI connectors; wait for any attached display.
+while :; do
+ for f in /sys/class/drm/card*-DP-*/status /sys/class/drm/card*-HDMI-A-*/status; do
+  [ "$(cat "$f" 2>/dev/null)" != connected ] || exit 0
+ done
+ sleep 1
+done

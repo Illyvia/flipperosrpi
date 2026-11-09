@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "output": "dsi",
+  "connector": "DSI-1",
+  "mode": "1280x800",
+  "scale": "auto",
+  "rotation": 0,
+  "tint": "grayscale",
+  "panel": {"overlay": "vc4-kms-dsi-waveshare-panel", "params": ["8_0_inch"]}
+}

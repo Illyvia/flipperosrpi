@@ -1,0 +1,12 @@
+/upstream/
+/build/
+__pycache__/
+*.pyc
+*.img
+*.zst
+*.nmconnection
+.env
+.env.*
+*known-hosts*
+*.pem
+*.key

@@ -1,0 +1,23 @@
+[Unit]
+Description=Flipper UI Raspberry Pi development preview
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=flipctl-rpi
+RuntimeDirectory=flipctl-rpi
+Environment=XDG_RUNTIME_DIR=/run/flipctl-rpi
+Environment=HOME=/var/lib/flipctl-rpi
+WorkingDirectory=/usr/local/share/flipctl
+ExecStart=/usr/local/bin/flipctl --headless --remote 127.0.0.1:8899 --assets /usr/local/share/flipctl/assets/remote
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
